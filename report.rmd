@@ -1,0 +1,937 @@
+---
+title: "Tp2-christy-nancy-nitya"
+output: github_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Executive Summary
+Our approach to this project began with exploratory data analysis, followed by the creation of new features to enhance predictive accuracy. We applied four supervised learning methods—linear regression, logistic regression, random forest, and gradient boosting—on the training data. Model performance was evaluated using cross-validation based on the Area Under the Curve (AUC) metric for both loan acceptance and default predictions. Boosting achieved the highest AUC, indicating superior discriminative ability. We then used a train-test split with the boosting model to calculate profit outcomes and guide approval decisions for the 1,000 new loan applications.
+
+# Feature Engineering
+To improve predictive performance and capture nonlinear risk factors, four new features were created:
+
+Income to loan ratio:
+income_to_loan = annual_income / (loan_amount * (1 + offered_rate))
+Captures affordability, where low ratios indicate financial strain and higher default risk.
+
+
+Loan to credit lines:
+loan_to_credit_lines = loan_amount / num_credit_lines
+Measures how large the requested loan is relative to existing credit history.
+
+
+Inquiries to delinquencies:
+inquiries_to_delinquencies = inquiries_6months * 4 / delinquencies_2yrs
+Captures short-term credit-seeking behavior relative to past repayment problems. We multiply by four to normalize recent inquiries to two years, aligning it with the delinquency time frame of two years.
+
+
+Delinquencies to credit lines:
+delinquencies_to_credit_lines = delinquencies_2yrs / num_credit_lines
+Quantifies past credit problems relative to available credit.
+
+
+These newly engineered features help us zone in on variables that are useful to our model, reducing noise and enhancing the representation of financial relationships that will help the model make better predictions. It also improves model interpretability, especially for tree-based algorithms that capture more complex interactions. Our featured engineering variables helped differentiate low-risk from high-risk borrowers more effectively than the raw unprocessed variables.
+
+# Model Development
+We tested four supervised learning methods: linear regression, logistic regression, random forest, and gradient boosting. We used cross-validation to ensure model robustness, with AUC and classification accuracy as the primary evaluation metrics.
+
+Linear regression provided a baseline but performed very poorly in comparison due to nonlinearity in loan risk patterns.
+
+
+Logistic regression improved interpretability and captured key acceptance characteristics, but it struggled with complex feature interactions.
+
+Random forest handled non-linearities well and achieved good predictive accuracy.
+
+Boosting outperformed all others, with almost the highest AUC for both acceptance and default predictions, demonstrating superior ability to capture subtle nonlinear dependencies.
+
+# Model Selection Justification:
+To determine the best model among the four, we calculated the AUC value for each model because it provides a common performance measure across the models.
+
+Below are the metrics that we calculated for each model.
+
+Linear model: AUC (Acceptance = 0.796; Default = 0.622), plus R² and MSE metrics.
+
+Logistic model: AUC (Acceptance = 0.889; Default = 0.6241), with accuracy, precision, recall, and specificity also computed.
+
+Random forest: AUC (Acceptance = 0.812; Default = 0.555), along with out-of-bag error.
+
+Boosting (GBM): AUC (Acceptance = 0.882; Default = 0.7192).
+
+Although additional metrics were calculated, AUC served as the most meaningful for direct comparison. The boosting and logistic models achieved similar acceptance AUCs, but boosting outperformed logistic regression in default prediction (approximately 72% versus 62%). As a result, we decided on using the boost gbm model as our final model for profit-estimation and decision-making.
+
+# Business Strategy
+Interest rate setting:
+ In our code, interest rates were determined by an individualized profit maximization approach. The procedure evaluated a set of possible interest rates for each loan and calculated the expected profit associated with each one. For every loan, the model identified the rate that produced the highest expected profit, which became the optimal rate for that borrower. The model then determined whether issuing the loan was financially worthwhile: if the optimal expected profit was positive, the loan was approved; if the expected profit was negative, the loan was denied and the profit was set to zero.
+After applying this strategy across all 1,000 loans in the test dataset, the total expected profit was $1,335,189. This total represents the return expected under a policy that selects the most profitable rate for each borrower and approves only those loans predicted to yield positive returns.
+
+Approve/deny decisions:
+Once the optimal interest rate and maximum expected profit were identified for each applicant, the expected profit value was used as the decision criterion. Applications with positive expected profit were approved, while those with zero or negative profit were denied. This approach ensures that every loan issued is estimated to add value to the overall lending portfolio.
+
+Risk management approach:
+The model’s risk management framework integrates the predicted probability of default directly into the profit calculation. For each borrower, the formula weighs potential earnings if repayment occurs against potential losses in case of default. By systematically identifying the offered rate that maximizes total profit, the model balances expected return and risk without relying on arbitrary thresholds. This structured, data-driven approach supports sustainable lending decisions and long-term portfolio profitability.
+
+# Model Interpretation
+The feature importance analysis from the boosting model helped identify which factors most strongly influence loan acceptance and default.
+For loan acceptance, the most important factors were the offered interest rate, income-to-loan ratio, and annual income. Borrowers with higher income and a lower income-to-loan ratio were much more likely to accept a loan offer, showing that affordability plays a major role in decision-making. On the other hand, a higher offered rate made borrowers less likely to accept, suggesting price sensitivity among applicants.
+For loan default, the bar chart of feature importance showed that credit utilization, income-to-loan ratio, and credit score were the top predictors. Borrowers who used a large portion of their available credit or had lower credit scores were more likely to default. Those with stronger financial stability and a lower share of their income going toward loan payments were less likely to do so.
+From a business standpoint, these results highlight two key insights. First, understanding what drives acceptance helps design competitive offers and improve customer targeting. Second, knowing which factors increase default risk helps in setting fair but profitable interest rates and making smarter approval decisions. Overall, the findings show that affordability, past credit behavior, and how borrowers manage their credit are the most important factors in predicting both acceptance and default.
+
+# Conclusion
+This project showed how combining financial reasoning with advanced machine learning can improve credit decision-making. By using models that learn patterns in borrower data, we were able to predict both who is likely to accept a loan and who is likely to default with a high degree of accuracy. Among all the models tested, the boosting model gave the most consistent and reliable results, performing well on both acceptance and default predictions.
+The process involved several key steps—creating meaningful new features, carefully comparing model performance, and using a profit-based metric to guide decisions. Together, these steps built a system that tailors loan interest rates to each borrower, approves only profitable loans, and manages overall risk more effectively.
+From a business perspective, this approach can increase total profit while maintaining fair lending practices and financial stability. It provides a framework that can easily scale, adapt to new data, and support smart, data-driven lending strategies over time.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(broom)
+library(purrr)
+library(ggplot2)
+library(gbm)
+library(pROC)
+library(randomForest)
+```
+
+```{r}
+train_data <- read.csv("/Users/lllllnx/Downloads/loan_training_data.csv")
+```
+
+```{r}
+data(train_data, package = "ISLR2")
+head(train_data)
+```
+
+```{r}
+#create new variables and clean the dataset by removing NAs and Infs
+library(dplyr)
+library(tidyr)
+train_clean <- train_data %>% mutate(
+  income_to_loan = annual_income / (loan_amount * (1 + offered_rate)),
+  loan_to_credit_lines = loan_amount / num_credit_lines,
+  inquiries_to_delinquencies = inquiries_6months * 4 / delinquencies_2yrs,
+  delinquencies_to_credit_lines = delinquencies_2yrs / num_credit_lines
+) %>%
+  drop_na(income_to_loan, loan_to_credit_lines, 
+          inquiries_to_delinquencies, delinquencies_to_credit_lines) %>%
+  filter(if_all(everything(), ~ !is.infinite(.)))
+```
+
+```{r}
+train_clean$default <- as.factor(train_clean$default)
+train_clean$offer_accepted <- as.factor(train_clean$offer_accepted)
+```
+
+# Logistic Regression Model
+```{r}
+#build the logistic regression model for offer acceptance
+model_logistic_acceptance <- glm(
+  offer_accepted ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate,
+  data = train_clean,
+  family = binomial
+)
+summary(model_logistic_acceptance)
+```
+
+```{r}
+#make the coefficients readable
+library(broom)
+tr_clean_summary <- tidy(model_logistic_acceptance)
+tr_clean_summary$odds_ratio <- exp(tr_clean_summary$estimate)
+tr_clean_summary %>% select(term, estimate, odds_ratio, p.value)
+```
+
+The logistic regression model for loan acceptance reveals that the offered interest rate is by far the most significant predictor of whether a borrower will accept a loan. Specifically, higher interest rates sharply decrease the likelihood of acceptance, indicating that borrowers are highly sensitive to the cost of borrowing. In addition to the interest rate, variables such as credit utilization, annual income, credit score, and loan amount also show measurable, though smaller, effects on acceptance decisions. For instance, borrowers with higher credit utilization are slightly more likely to accept the loan, potentially reflecting greater reliance on credit. Conversely, higher income slightly reduces the probability of acceptance, suggesting that wealthier borrowers may be more selective or have alternative financing options. Variables related to inquiries and delinquencies generally have weaker impacts, implying that past credit behavior is less influential than the immediate financial terms of the loan.
+
+```{r}
+#generate probabilities 
+train_predict_acc <- train_clean %>% 
+  mutate(prob_logistic = predict(model_logistic_acceptance, type = "response"))
+
+train_predict_acc %>% select(loan_id, annual_income, credit_score, credit_utilization, loan_amount, offer_accepted, offered_rate, prob_logistic) %>% arrange(desc(prob_logistic)) %>% head(50)
+```
+
+```{r}
+#compute the confusion matrix to classify predictions
+train_predict_acc$pred_logistic <- factor(ifelse(train_predict_acc$prob_logistic>0.5,"1","0"), levels=c("0","1")) #since the highest probability is around 1, I set 0.5 as the threshold here
+
+table(Predicted=train_predict_acc$pred_logistic, Actual=train_predict_acc$offer_accepted)
+```
+
+```{r}
+#compute performance metrics
+cm <- table(Predicted = train_predict_acc$pred_logistic,
+            Actual = train_predict_acc$offer_accepted)
+
+TN <- cm["0", "0"]
+FP <- cm["1", "0"]
+FN <- cm["0", "1"]
+TP <- cm["1", "1"]
+
+accuracy    <- (TP + TN) / (TP + TN + FP + FN)
+precision   <- TP / (TP + FP)
+recall      <- TP / (TP + FN) #how many we catch it among who actually defaulted
+specificity <- TN / (TN + FP) #how many we mark as safe among who didn't default
+
+metrics_acc <- data.frame(
+  accuracy = accuracy,
+  precision = precision,
+  recall = recall,
+  specificity = specificity
+)
+
+metrics_acc
+```
+
+The performance of the logistic regression model for predicting loan acceptance shows that it is generally effective. The model achieves an overall accuracy of 82.6%, meaning it correctly classifies the majority of loans. Its precision of 84.4% indicates that most loans predicted as accepted are indeed accepted, while the recall of 92.0% shows the model successfully identifies nearly all actual accepted loans. The specificity of 61.1% is lower, meaning the model is less accurate at predicting rejections. Overall, the model is particularly strong at identifying likely borrowers, though it tends to overpredict acceptance slightly.
+
+```{r}
+library(purrr)     
+library(ggplot2)   
+
+#define the helper
+calculate_roc <- function(probabilities, actual_outcomes) {
+  thresholds <- seq(0, 1, by = 0.01)
+  
+  roc_data <- map_dfr(thresholds, function(thresh) {
+    predictions <- ifelse(probabilities > thresh, 1, 0)
+    
+    tp <- sum(predictions == 1 & actual_outcomes == 1)
+    fp <- sum(predictions == 1 & actual_outcomes == 0)
+    tn <- sum(predictions == 0 & actual_outcomes == 0)
+    fn <- sum(predictions == 0 & actual_outcomes == 1)
+    
+    tpr <- tp / (tp + fn)  
+    fpr <- fp / (fp + tn)  
+    
+    data.frame(threshold = thresh, tpr = tpr, fpr = fpr)
+  })
+  
+  roc_data <- roc_data[order(roc_data$fpr), ]
+  auc <- sum(diff(roc_data$fpr) *
+               (roc_data$tpr[-1] + roc_data$tpr[-length(roc_data$tpr)])) / 2
+  
+  list(roc_data = roc_data, auc = auc)
+}
+```
+
+```{r}
+# input acceptance data from my dataset
+actual_numeric_acc <- ifelse(train_predict_acc$offer_accepted == "1", 1, 0)
+roc_result_acc <- calculate_roc(
+  probabilities   = train_predict_acc$prob_logistic,  
+  actual_outcomes = actual_numeric_acc                
+)
+roc_data_acc  <- roc_result_acc$roc_data
+auc_value_acc <- roc_result_acc$auc
+
+auc_value_acc  
+```
+
+```{r}
+#plot ROC curve 
+ggplot(roc_data_acc, aes(x = fpr, y = tpr)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = paste0("ROC Curve_Acceptance_Logit Regression (AUC = ", round(auc_value_acc, 4), ")"),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#select all accepted offers by removing NA rows in default 
+train_clean_all_accepted <- train_clean %>%
+  drop_na(default)
+```
+
+
+```{r}
+#build the logistic regression model for default 
+model_logistic_def <- glm(
+  default ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate,
+  data = train_clean_all_accepted,
+  family = binomial
+)
+summary(model_logistic_def)
+```
+
+The default model predicts the likelihood that a borrower will fail to repay a loan. The results show that credit score, annual income, and credit utilization are the most important factors. Borrowers with higher credit scores and incomes are less likely to default, while those using a larger portion of their available credit are more likely to default. The model does well at identifying borrowers who will not default, but it is less accurate at catching all defaults. These insights can help guide lending decisions and manage risk.
+
+```{r}
+tr_clean_summary_def <- tidy(model_logistic_def)
+tr_clean_summary_def$odds_ratio <- exp(tr_clean_summary_def$estimate)
+tr_clean_summary_def %>% select(term, estimate, odds_ratio, p.value)
+```
+
+```{r}
+train_predict_def <- train_clean_all_accepted %>% 
+  mutate(prob_logistic = predict(model_logistic_def, type = "response"))
+train_predict_def %>% select(loan_id, credit_utilization, inquiries_to_delinquencies, default, prob_logistic) %>% arrange(desc(prob_logistic)) %>% head(50)
+```
+
+```{r}
+train_predict_def$pred_logistic <- factor(ifelse(train_predict_def$prob_logistic>0.3,"1","0"), levels=c("0","1")) #since the highest probability is around 0.6, I set 0.3 as the threshold here
+
+table(Predicted=train_predict_def$pred_logistic, Actual=train_predict_def$default)
+```
+```{r}
+cm <- table(Predicted = train_predict_def$pred_logistic,
+            Actual = train_predict_def$default)
+
+TN <- cm["0", "0"]
+FP <- cm["1", "0"]
+FN <- cm["0", "1"]
+TP <- cm["1", "1"]
+
+accuracy    <- (TP + TN) / (TP + TN + FP + FN)
+precision   <- TP / (TP + FP)
+recall      <- TP / (TP + FN) #how many we catch it among who actually defaulted
+specificity <- TN / (TN + FP) #how many we mark as safe among who didn't default
+
+metrics <- data.frame(
+  accuracy = accuracy,
+  precision = precision,
+  recall = recall,
+  specificity = specificity
+)
+
+metrics
+```
+
+```{r}
+actual_numeric_def <- ifelse(train_predict_def$default == "1", 1, 0)
+roc_result_def <- calculate_roc(
+  probabilities   = train_predict_def$prob_logistic,  
+  actual_outcomes = actual_numeric_def                
+)
+roc_data_def  <- roc_result_def$roc_data
+auc_value_def <- roc_result_def$auc
+
+auc_value_def   
+```
+
+```{r}
+library(ggplot2)
+ggplot(roc_data_def, aes(x = fpr, y = tpr)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = paste0("ROC Curve_Default_Logit Regression (AUC = ", round(auc_value_def, 4), ")"),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_minimal()
+```
+
+# Random Forest
+
+```{r}
+
+#Acceptance - random forest
+set.seed(123)
+rf_accept <- randomForest(
+  offer_accepted ~ age + annual_income + credit_score + num_credit_lines +
+    delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+    income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies +
+    delinquencies_to_credit_lines,
+  data = train_clean,
+  ntree = 1000,
+  mtry = floor(sqrt(ncol(train_clean))),
+  importance = TRUE,
+  keep.inbag = TRUE
+)
+
+rf_accept
+rf_accept$confusion
+rf_accept$err.rate
+```
+
+The Random Forest model for predicting loan acceptance has an OOB error rate of about 24.5%, meaning it correctly predicts whether a customer will accept a loan around three-quarters of the time. Looking at the confusion matrix, the model does a good job identifying people who accept offers, but it sometimes mistakes people who would reject the offer as likely to accept. This shows the model is fairly reliable for spotting likely acceptances, which can help guide loan approvals, but some adjustments might be needed to avoid giving offers to customers who would actually say no.
+
+```{r}
+#Default - random forest
+set.seed(123)
+rf_default <- randomForest(
+  default ~ age + annual_income + credit_score + num_credit_lines +
+    delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+    income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies +
+    delinquencies_to_credit_lines,
+  data = train_clean_all_accepted,
+  ntree = 1000,
+  mtry = floor(sqrt(ncol(train_clean_all_accepted))),
+  importance = TRUE,
+  keep.inbag = TRUE
+)
+
+rf_default
+rf_default$confusion
+rf_default$err.rate
+```
+The Random Forest model for predicting loan default has an OOB error rate of about 25%, meaning it correctly predicts defaults and non-defaults around three-quarters of the time. The confusion matrix shows the model is very good at identifying loans that won’t default, but it struggles to correctly identify loans that will default—it misclassifies most of them. This suggests the model is strong for spotting safe loans, but less reliable for predicting risky ones, so caution is needed when using it to manage credit risk.
+
+```{r}
+imp_acc <- importance(rf_accept)
+
+importance_df_acc <- data.frame(
+  Variable = rownames(imp_acc),
+  MeanDecreaseAccuracy = imp_acc[, "MeanDecreaseAccuracy"],
+  MeanDecreaseGini = imp_acc[, "MeanDecreaseGini"]
+) %>% arrange(desc(MeanDecreaseAccuracy))
+
+ggplot(importance_df_acc,
+       aes(x = reorder(Variable, MeanDecreaseAccuracy),
+           y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Variable Importance — Acceptance Model",
+    x = "Variable",
+    y = "Mean Decrease Accuracy"
+  )
+```
+
+To understand which factors most influence whether a customer accepts a loan, we used the Random Forest model’s built-in variable importance measures. Specifically, we extracted the Mean Decrease in Accuracy and Mean Decrease in Gini for each predictor. The Mean Decrease Accuracy shows how much the model’s prediction accuracy drops if a variable is removed, so higher values indicate more important variables. We then arranged the variables by their Mean Decrease Accuracy and visualized them using a horizontal bar chart. This plot clearly highlights which features, such as credit score, income-to-loan ratio, and annual income are the strongest predictors of loan acceptance, providing actionable insights for targeting potential borrowers.
+
+```{r}
+imp_def <- importance(rf_default)
+
+importance_df_def <- data.frame(
+  Variable = rownames(imp_def),
+  MeanDecreaseAccuracy = imp_def[, "MeanDecreaseAccuracy"],
+  MeanDecreaseGini = imp_def[, "MeanDecreaseGini"]
+) %>% arrange(desc(MeanDecreaseAccuracy))
+
+ggplot(importance_df_def,
+       aes(x = reorder(Variable, MeanDecreaseAccuracy),
+           y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "tomato") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Variable Importance — Default Model",
+    x = "Variable",
+    y = "Mean Decrease Accuracy"
+  )
+```
+
+For the default prediction model, we similarly used the Random Forest’s variable importance measures to identify the key drivers of loan default. We extracted both the Mean Decrease in Accuracy and Mean Decrease in Gini for each predictor, with higher values indicating variables that are more critical for accurate predictions. By arranging the predictors by Mean Decrease Accuracy and visualizing them in a bar chart, we could clearly see which factors most influence default risk. Key variables such as loan amount, income to loan ratio and annual income emerged as the strongest predictors, highlighting the features most relevant for assessing borrower risk.
+
+```{r}
+mtry_values <- 1:10
+
+mtry_results_accept <- data.frame(
+  mtry = mtry_values,
+  oob_error = numeric(length(mtry_values))
+)
+
+for (i in seq_along(mtry_values)) {
+  set.seed(2024)
+  rf_temp <- randomForest(
+    offer_accepted ~ age + annual_income + credit_score + num_credit_lines +
+      delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+      income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies +
+      delinquencies_to_credit_lines,
+    data = train_clean,
+    mtry = mtry_values[i],
+    ntree = 1000
+  )
+  
+  mtry_results_accept$oob_error[i] <- tail(rf_temp$err.rate[,"OOB"], 1)
+}
+
+mtry_results_accept
+```
+
+```{r}
+
+mtry_values <- 1:10
+
+mtry_results_default <- data.frame(
+  mtry = mtry_values,
+  oob_error = numeric(length(mtry_values))
+)
+
+for (i in seq_along(mtry_values)) {
+  set.seed(2024)
+  rf_temp <- randomForest(
+    default ~ age + annual_income + credit_score + num_credit_lines +
+      delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+      income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies +
+      delinquencies_to_credit_lines,
+    data = train_clean_all_accepted,
+    mtry = mtry_values[i],
+    ntree = 1000
+  )
+  
+  mtry_results_default$oob_error[i] <- tail(rf_temp$err.rate[,"OOB"], 1)
+}
+
+mtry_results_default
+```
+
+To optimize the Random Forest model for predicting offer acceptance, we tested different values of the mtry parameter, which controls the number of predictor variables randomly considered at each split in a tree. We looped through mtry values from 1 to 10, fitting a Random Forest model for each and recording the OOB error.The resulting tables shows the OOB error for each tested mtry for acceptance and default, allowing us to select the best configuration for the final model.From the OOB error results, we observed that the error decreased as mtry increased up to a certain point, after which it either stabilized or slightly increased. This indicates that using too few variables at each split reduces model accuracy, while too many adds little benefit and may increase variance. The mtry value with the lowest OOB error was selected for the final Random Forest model, ensuring a good balance between bias and variance.
+
+```{r}
+rf_accept_probs <- rf_accept$votes[, "1"]
+actual_accept   <- train_clean$offer_accepted
+
+roc_accept_rf <- roc(
+  response = actual_accept,
+  predictor = rf_accept_probs,
+  levels = c("0", "1")
+)
+
+auc_accept_rf <- auc(roc_accept_rf)
+
+# Plot 
+plot(roc_accept_rf,
+     main = paste("ROC Curve - Acceptance Model\nAUC =", round(auc_accept_rf, 4)),
+     col = "blue",
+     lwd = 2)
+```
+```{r}
+rf_default_probs <- rf_default$votes[, "1"]
+actual_default   <- train_clean_all_accepted$default
+
+roc_default_rf <- roc(
+  response = actual_default,
+  predictor = rf_default_probs,
+  levels = c("0", "1")
+)
+
+auc_default_rf <- auc(roc_default_rf)
+
+# Plot
+plot(roc_default_rf,
+     main = paste("ROC Curve - Default Model\nAUC =", round(auc_default_rf, 4)),
+     col = "red",
+     lwd = 2)
+```
+
+```{r}
+auc_accept_rf
+auc_default_rf
+```
+
+# Boosting
+```{r}
+boost_data <- read.csv("/Users/lllllnx/Downloads/loan_training_data.csv")
+```
+
+```{r}
+boost_clean <- boost_data %>% mutate(
+  income_to_loan = annual_income / (loan_amount * (1 + offered_rate)),
+  loan_to_credit_lines = loan_amount / num_credit_lines,
+  inquiries_to_delinquencies = inquiries_6months * 4 / delinquencies_2yrs,
+  delinquencies_to_credit_lines = delinquencies_2yrs / num_credit_lines
+) %>%
+  drop_na(income_to_loan, loan_to_credit_lines, 
+          inquiries_to_delinquencies, delinquencies_to_credit_lines) %>%
+  filter(if_all(everything(), ~ !is.infinite(.)))
+```
+
+
+```{r}
+# Tune shrinkage and number of trees
+train_idx <- sample(nrow(boost_clean), nrow(boost_clean)/2)
+boost_train <- boost_clean[train_idx, ]
+boost_test <- boost_clean[-train_idx, ]
+
+library(gbm)
+shrinkage_grid <- c(0.01, 0.10, 0.20, 0.001)
+
+tune_res <- data.frame(
+  shrinkage     = shrinkage_grid,
+  mse           = NA,
+  optimal_trees = NA
+)
+
+for (i in seq_along(shrinkage_grid)) {
+  lam <- shrinkage_grid[i]
+
+  fit <- gbm(
+    offer_accepted ~ age + annual_income + credit_score + num_credit_lines +
+      delinquencies_2yrs + credit_utilization + loan_amount +
+      inquiries_6months + income_to_loan + loan_to_credit_lines +
+      inquiries_to_delinquencies + delinquencies_to_credit_lines +
+      offered_rate,
+    data = boost_train,
+    distribution = "bernoulli",
+    n.trees = 2000,          # big upper bound
+    interaction.depth = 4,
+    shrinkage = lam,
+    bag.fraction = 0.5,
+    cv.folds = 5,
+    verbose = FALSE
+  )
+
+  best_trees <- gbm.perf(fit, method = "cv", plot.it = FALSE)
+
+  pred <- predict(fit, boost_test, n.trees = best_trees, type = "response")
+  tune_res$mse[i] <- mean((pred - boost_test$offer_accepted)^2)
+  tune_res$optimal_trees[i] <- best_trees
+}
+
+tune_res
+```
+
+During the gradient boosting model tuning, we tested different learning rates (shrinkage values) to find the optimal trade-off between model complexity and predictive accuracy. For each shrinkage value, we allowed up to 2,000 trees and used 5-fold cross-validation to determine the optimal number of trees. The results showed that with a smaller learning rate of 0.001, the model required all 2,000 trees to achieve the best performance, while larger learning rates converged faster—e.g., a shrinkage of 0.10 only needed 31 trees. This illustrates the typical trade-off in boosting: smaller learning rates often require more trees but can produce more stable and accurate predictions, whereas larger learning rates converge quickly but may risk overfitting or underfitting if too aggressive.
+
+```{r}
+set.seed(1)
+
+boost_clean$acc_binary <- ifelse(boost_clean$offer_accepted == "1", 1, 0)
+
+boost_acc <- gbm(offer_accepted ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate, data = boost_train,
+                   distribution = "bernoulli",  # For regression
+                   n.trees = 2000,           # Number of trees
+                   interaction.depth = 3,     # Tree depth
+                   shrinkage = 0.001)         # Learning rate
+
+boost_prob <- predict(boost_acc, boost_test, 
+                     n.trees = 2000, type = "response")
+
+boost_pred_class <- ifelse(boost_prob > 0.5, "Yes", "No")
+
+# Make predictions
+boost_mse <- mean((boost_prob - boost_test$offer_accepted)^2)
+
+boost_mse
+```
+
+```{r}
+boost_cv <- gbm(offer_accepted ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate, data = boost_train,
+               distribution = "bernoulli",
+               n.trees = 2000,
+               interaction.depth = 4,     # Fixed - not tuned by CV
+               shrinkage = 0.01,          # Fixed - not tuned by CV
+               cv.folds = 5)              # Enables CV for finding optimal trees
+# Find optimal number of trees using CV error
+best_iter <- gbm.perf(boost_cv, method = "cv")
+# Make predictions using optimal number of trees
+pred_cv <- predict(boost_cv, boost_test, n.trees = best_iter, type = "response")
+```
+
+This graph shows how well the boosting model predicts the outcome as more trees are added. At first, both lines drop quickly, meaning the model is improving. The green line (cross-validation error) reaches its lowest point around 350–400 trees—the blue dashed line marks this spot. This is the point where the model performs best on new, unseen data. After that, the green line starts to rise again, meaning the model begins to overfit: it keeps getting better on the training data (black line keeps going down) but worse on new data. So, the best number of trees to use is the one at the lowest point of the green line, around 350–400.
+
+```{r}
+par(mar = c(5, 12, 4, 2))
+
+summary(boost_acc, cBars = 10, main = "Boosting Variable Importance for Acceptance",las = 2, cex.names = 0.7, cex.axis  = 0.7)
+```
+
+This plot clearly highlights which features, such as offered rate, income-to-loan ratio, and annual income are the strongest predictors of loan acceptance, providing actionable insights for targeting potential borrowers.
+
+```{r}
+plot(boost_acc, i.var = "offered_rate",  main = "Partial Dependence: Offered Rate")
+```
+```{r}
+boost_clean_def <- boost_clean %>%
+  drop_na(default)
+
+set.seed(1)
+
+boost_clean_def$default_binary <- ifelse(boost_clean_def$default == "1", 1, 0)
+
+train_idx1 <- sample(nrow(boost_clean_def), nrow(boost_clean_def)/2)
+boost_train_def <- boost_clean_def[train_idx1, ]
+boost_test_def <- boost_clean_def[-train_idx1, ]
+
+shrinkage_grid <- c(0.01, 0.10, 0.20, 0.001)
+
+tune_res_def <- data.frame(
+  shrinkage     = shrinkage_grid,
+  mse           = NA,
+  optimal_trees = NA
+)
+
+for (i in seq_along(shrinkage_grid)) {
+  lam <- shrinkage_grid[i]
+
+  fit <- gbm(
+    default ~ age + annual_income + credit_score + num_credit_lines +
+      delinquencies_2yrs + credit_utilization + loan_amount +
+      inquiries_6months + income_to_loan + loan_to_credit_lines +
+      inquiries_to_delinquencies + delinquencies_to_credit_lines +
+      offered_rate,
+    data = boost_clean_def,
+    distribution = "bernoulli",
+    n.trees = 2000,          
+    interaction.depth = 4,
+    shrinkage = lam,
+    bag.fraction = 0.5,
+    cv.folds = 5,
+    verbose = FALSE
+  )
+
+  best_trees_def <- gbm.perf(fit, method = "cv", plot.it = FALSE)
+
+  pred_def <- predict(fit, boost_test_def, n.trees = best_trees_def, type = "response")
+  tune_res_def$mse[i] <- mean((pred_def - boost_test_def$default)^2)
+  tune_res_def$optimal_trees[i] <- best_trees_def
+}
+
+tune_res_def
+```
+
+This table compares different shrinkage values for the boosting model and shows how they affect performance and the number of trees needed. Smaller shrinkage values (like 0.001 and 0.01) require many more trees to reach their best performance, because the model learns more slowly. Larger shrinkage values (0.1 and 0.2) need only a few trees, but they also produce slightly higher MSE, meaning their predictions are a bit less accurate. Overall, the shrinkage value of 0.001 gives the lowest MSE, but it needs over 1200 trees, while 0.01 gives almost as good accuracy with far fewer trees (about 95), making it a more efficient choice.
+
+```{r}
+boost_cv_def <- gbm(default ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate, data = boost_clean_def,
+               distribution = "bernoulli",
+               n.trees = 2000,
+               interaction.depth = 4,     # Fixed - not tuned by CV
+               shrinkage = 0.01,          # Fixed - not tuned by CV
+               cv.folds = 5)              # Enables CV for finding optimal trees
+# Find optimal number of trees using CV error
+best_iter_def <- gbm.perf(boost_cv_def, method = "cv")
+# Make predictions using optimal number of trees
+pred_cv_def <- predict(boost_cv_def, boost_test_def, n.trees = best_iter_def, type = "response")
+```
+
+This graph shows how the model’s error changes as more trees are added during boosting. The black line is the training error, which keeps going down because the model fits the training data better with each iteration. The green line is the cross-validation error, which tells us how well the model generalizes to new data. It decreases at first, reaching its lowest point around the blue dashed line (about 250–300 trees), meaning the model performs best here. After that point, the green line slowly rises, showing that adding more trees leads to overfitting.
+
+```{r}
+#build the model
+library(gbm)
+boost_def <- gbm(default ~ age + annual_income + credit_score + num_credit_lines + delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months + income_to_loan + loan_to_credit_lines + inquiries_to_delinquencies + delinquencies_to_credit_lines + offered_rate, data = boost_clean_def,
+                   distribution = "bernoulli",  # For regression
+                   n.trees = 2000,           # Number of trees
+                   interaction.depth = 4,     # Tree depth
+                   shrinkage = 0.01)         # Learning rate
+
+boost_prob_def <- predict(boost_def, boost_test_def, 
+                     n.trees = 95, type = "response")
+
+boost_pred_class_def <- ifelse(boost_prob_def > 0.5, "Yes", "No")
+
+# Make predictions
+boost_mse_def <- mean((boost_prob_def - boost_test_def$default)^2)
+
+boost_mse_def
+```
+
+```{r}
+par(mar = c(5, 12, 4, 2))
+
+summary(boost_def, cBars = 10, main = "Boosting Variable Importance for Default",las = 2, cex.names = 0.7, cex.axis  = 0.7)
+```
+
+Visualizing them in a bar chart, we could clearly see which factors most influence default risk. Key variables such as credit utilization, income to loan ratio and credit score emerged as the strongest predictors, highlighting the features most relevant for assessing borrower risk.
+
+```{r}
+plot(boost_def, i.var = "credit_utilization",  main = "Partial Dependence: Credit Utilization")
+```
+
+```{r}
+#compute AUC for acceptance model
+boost_test$acc_binary <- ifelse(boost_test$offer_accepted == "1", 1, 0)
+boost_test$acc_binary <- as.numeric(boost_test$acc_binary)
+
+roc_accept <- roc(boost_test$acc_binary, boost_prob)
+auc_accept <- auc(roc_accept)
+auc_accept   
+
+plot(roc_accept, legacy.axes = TRUE, main = paste0("ROC Curve: Boosting for Acceptance (AUC = ", round(auc_accept, 4), ")"))
+
+
+```
+
+```{r}
+boost_test_def$default_binary <- ifelse(boost_test_def$default == "1", 1, 0)
+boost_test_def$default_binary <- as.numeric(boost_test_def$default_binary)
+
+roc_default <- roc(boost_test_def$default_binary, boost_prob_def)
+auc_default <- auc(roc_default)
+auc_default   
+
+plot(roc_accept, legacy.axes = TRUE, main = paste0("ROC Curve: Boosting for Default (AUC = ", round(auc_default, 4), ")"))
+
+```
+
+# Linear Regression Model
+```{r}
+## ACCEPTANCE - linear regression model 
+train_clean$default <- as.numeric(train_clean$default)
+train_clean$offer_accepted <- as.numeric(train_clean$offer_accepted)
+
+model_linear_accept <- lm(
+  offer_accepted ~ age + annual_income + credit_score + num_credit_lines +
+    delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+    income_to_loan + loan_to_credit_lines +
+    inquiries_to_delinquencies + delinquencies_to_credit_lines,
+  data = train_clean
+)
+
+train_clean$pred_accept_linear <- predict(model_linear_accept)
+
+roc_accept_linear <- roc(
+  response = train_clean$offer_accepted,
+  predictor = train_clean$pred_accept_linear
+)
+
+auc_accept_linear <- auc(roc_accept_linear)
+print(paste("AUC - Acceptance:", round(auc_accept_linear, 4)))
+
+plot(roc_accept_linear,
+     legacy.axes = TRUE,
+     main = "ROC Curve: Linear Model for Acceptance",
+     print.auc = TRUE)
+
+RMSE_accept <- sqrt(mean((train_clean$offer_accepted - train_clean$pred_accept_linear)^2))
+summary_accept <- summary(model_linear_accept)
+
+metrics_accept_linear <- data.frame(
+  R_squared = summary_accept$r.squared,
+  Adj_R_squared = summary_accept$adj.r.squared,
+  RMSE = RMSE_accept
+)
+
+metrics_accept_linear
+```
+
+
+The linear model does not perform very well at predicting whether an offer is accepted. The R-squared (0.206) and Adjusted R-squared (0.199) show that the model explains only about 20% of the variance in offer acceptance, which means most of the important patterns are not captured by a linear relationship. The RMSE of about 0.41 indicates a fairly large average prediction error, especially considering the outcome is binary (0 or 1). Overall, these metrics indicate that a linear model is not a strong predictor for this problem, and more flexible models (like logistic regression, decision trees, or boosting) will likely perform much better.
+
+```{r}
+#DEFAULT - linear regression model 
+# Convert outcomes to numeric (0/1)
+train_clean_all_accepted$default <- as.numeric(train_clean_all_accepted$default)
+train_clean_all_accepted$offer_accepted <- as.numeric(train_clean_all_accepted$offer_accepted)
+
+model_linear_default <- lm(
+  default ~ age + annual_income + credit_score + num_credit_lines +
+    delinquencies_2yrs + credit_utilization + loan_amount + inquiries_6months +
+    income_to_loan + loan_to_credit_lines +
+    inquiries_to_delinquencies + delinquencies_to_credit_lines,
+  data = train_clean_all_accepted
+)
+
+train_clean_all_accepted$pred_default_linear <- predict(model_linear_default)
+
+roc_default_linear <- roc(
+  response = train_clean_all_accepted$default,
+  predictor = train_clean_all_accepted$pred_default_linear
+)
+
+auc_default_linear <- auc(roc_default_linear)
+print(paste("AUC - Default:", round(auc_default_linear, 4)))
+
+plot(roc_default_linear,
+     legacy.axes = TRUE,
+     main = "ROC Curve: Linear Model for Default",
+     print.auc = TRUE)
+
+RMSE_default <- sqrt(mean((train_clean_all_accepted$default - train_clean_all_accepted$pred_default_linear)^2))
+summary_default_linear <- summary(model_linear_default)
+
+metrics_default_linear <- data.frame(
+  R_squared = summary_default_linear$r.squared,
+  Adj_R_squared = summary_default_linear$adj.r.squared,
+  RMSE = RMSE_default
+)
+
+metrics_default_linear
+```
+
+For default, the linear model for predicting default performs very poorly. The R-squared is only 0.039, meaning the model explains less than 4% of the variation in whether someone defaults. The Adjusted R-squared (0.027) is even lower, confirming that the predictors contribute very little once model complexity is accounted for. The RMSE is about 0.415, which is almost the same as the error you would get from predicting the average default rate for everyone, showing that the model does not improve much over a naïve baseline. Overall, these numbers indicate that a linear model is not effective for predicting default, likely because the relationship between the predictors and the outcome is nonlinear and requires a more flexible modeling approach.
+
+# Running Boosting on Test Data & Profit Maximization
+```{r}
+test_data <- read.csv("/Users/lllllnx/Downloads/loan_test_data.csv")
+
+library(dplyr)
+
+test_clean <- test_data %>%
+  mutate(
+    loan_to_credit_lines = loan_amount / num_credit_lines,
+    inquiries_to_delinquencies = inquiries_6months * 4 / delinquencies_2yrs,
+    delinquencies_to_credit_lines = delinquencies_2yrs / num_credit_lines
+  )
+
+rate_min <- min(boost_clean$offered_rate, na.rm = TRUE)
+rate_max <- max(boost_clean$offered_rate, na.rm = TRUE)
+
+rate_grid <- seq(rate_min, rate_max, by = 0.005)
+
+rate_min; rate_max
+```
+
+
+```{r}
+n_loans <- nrow(test_clean)
+n_rates <- length(rate_grid)
+
+profit_mat <- matrix(NA_real_, nrow = n_loans, ncol = n_rates)
+
+for (j in seq_along(rate_grid)) {
+  r <- rate_grid[j]
+  
+#creating a new df with new columns 
+  df_rate <- test_clean %>%
+    mutate(
+      offered_rate = r,
+      income_to_loan = annual_income / (loan_amount * (1 + offered_rate))
+    )
+  
+  # 1) probability of acceptance (boost model)
+  df_acc <- predict(
+    boost_acc,
+    newdata = df_rate,
+    type = "response"
+  )
+  
+  # 2) probability of default (boost model)
+  df_def <- predict(
+    boost_def,
+    newdata = df_rate,
+    type = "response"
+  )
+  
+  # 3) expected profit for this rate r
+  profit_if_paid   <- df_rate$loan_amount * r * 3 - 200
+  loss_if_default  <- -(df_rate$loan_amount + 700)
+  
+  expected_profit_r <- df_acc * (
+    (1 - df_def) * profit_if_paid +
+      df_def * loss_if_default
+  )
+  
+  profit_mat[, j] <- expected_profit_r
+}
+```
+
+
+```{r}
+best_idx <- max.col(profit_mat, ties.method = "first")
+test_clean$optimal_rate <- rate_grid[best_idx]
+test_clean$expected_profit <- profit_mat[cbind(seq_len(n_loans), best_idx)]
+
+test_clean$decision <- ifelse(test_clean$expected_profit > 0, "approve", "deny")
+test_clean$expected_profit <- pmax(test_clean$expected_profit, 0)
+
+total_expected_profit <- sum(test_clean$expected_profit)
+total_expected_profit
+
+```
+
+The procedure evaluates a set of possible interest rates for each loan and calculates the expected profit associated with each rate. For every loan, the model identifies the interest rate that produces the highest expected profit, and this becomes the loan’s optimal rate. The model then determines whether issuing the loan is financially worthwhile: if the optimal expected profit is positive, the loan is approved; if the expected profit is negative, the loan is denied and the profit is set to zero. After applying this strategy across all 1,000 loans in the test dataset, the total expected profit is $1,335,189. This total represents the profit that the portfolio is expected to generate under a policy that selects the most profitable rate for each loan and approves only those loans predicted to yield positive returns.
+
+```{r}
+library(dplyr)
+test_clean <- test_clean %>%
+  rename(
+    interest_rate   = optimal_rate
+  )
+df_profit_max <- test_clean %>% select(loan_id, decision, interest_rate)
+```
+
+```{r}
+write.csv(df_profit_max, "Christy_Nancy_Nitya_predictions.csv", row.names = FALSE)
+```
+
